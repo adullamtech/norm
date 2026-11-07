@@ -202,6 +202,39 @@ describe("NormClient", () => {
       expect(result).toBe(true);
     });
 
+    it("updates markdown via updatePageMarkdown when provided", async () => {
+      mockClient.pages.update.mockResolvedValue({ id: "page-1" });
+      mockClient.pages.updateMarkdown.mockResolvedValue({ markdown: "# New" });
+
+      const result = await norm.updatePage({
+        pageId: "page-1",
+        properties: { title: [{ text: { content: "Updated" } }] },
+        markdown: "# New",
+      });
+
+      expect(result).toBe(true);
+      expect(mockClient.pages.updateMarkdown).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page_id: "page-1",
+          replace_content: { new_str: "# New" },
+        }),
+      );
+    });
+
+    it("skips pages.update when properties are empty", async () => {
+      mockClient.pages.updateMarkdown.mockResolvedValue({ markdown: "# New" });
+
+      const result = await norm.updatePage({
+        pageId: "page-1",
+        properties: {},
+        markdown: "# New",
+      });
+
+      expect(result).toBe(true);
+      expect(mockClient.pages.update).not.toHaveBeenCalled();
+      expect(mockClient.pages.updateMarkdown).toHaveBeenCalledTimes(1);
+    });
+
     it("returns false and calls onError on failure", async () => {
       const onError = vi.fn();
       const normWithHandler = new NormClient({
@@ -212,7 +245,7 @@ describe("NormClient", () => {
 
       const result = await normWithHandler.updatePage({
         pageId: "page-1",
-        properties: {},
+        properties: { title: [{ text: { content: "Updated" } }] },
       });
       expect(result).toBe(false);
       expect(onError).toHaveBeenCalledWith(expect.any(Error), {
@@ -378,7 +411,10 @@ describe("factory (lazy client)", () => {
 
   it("works with an async factory function", async () => {
     const factory = vi.fn(
-      () => Promise.resolve(mockClient) as Promise<NormConfig["client"]>,
+      () =>
+        Promise.resolve(mockClient) as unknown as Promise<
+          NormConfig["client"]
+        >,
     );
     const norm = new NormClient({
       client: factory as unknown as NormConfig["client"],
