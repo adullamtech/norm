@@ -17,6 +17,7 @@ import type {
   UpdatePageInput,
   GetPageByIdOptions,
   NormAttachment,
+  WritableProps,
 } from "./types";
 import {
   retrieveFromPage,
@@ -150,15 +151,31 @@ export class NormClient {
   async updatePage(input: UpdatePageInput): Promise<boolean> {
     try {
       const client = await this.getNotion();
-      await client.pages.update({
-        page_id: input.pageId,
-        properties: input.properties as UpdatePageParameters["properties"],
-      });
+      const properties = input.properties as
+        | UpdatePageParameters["properties"]
+        | undefined;
+
+      if (properties && Object.keys(properties).length > 0) {
+        await client.pages.update({
+          page_id: input.pageId,
+          properties,
+        });
+      }
+
+      if (input.markdown !== undefined) {
+        return this.updatePageMarkdown(input.pageId, input.markdown);
+      }
+
       return true;
     } catch (error) {
       this.onError?.(error as Error, { pageId: input.pageId });
       return false;
     }
+  }
+
+  /** @internal Used by the model layer to surface non-fatal write issues. */
+  warn(msg: string, ctx: Record<string, unknown> = {}): void {
+    this.onWarn?.(msg, ctx);
   }
 
   async updatePageMarkdown(pageId: string, markdown: string): Promise<boolean> {
@@ -314,7 +331,7 @@ export class NormClient {
     [TTransform] extends [never]
       ? z.infer<ZodObject<{ id: z.ZodString } & TShape>>
       : TTransform,
-    unknown
+    WritableProps<TShape>
   > {
     return defineObject(this, shape, opts as never) as never;
   }
