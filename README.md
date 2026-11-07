@@ -110,6 +110,8 @@ await Product.create({
 ```
 
 > Property names are your TypeScript field names — typos are compile errors.
+> The underlying Notion property name (e.g. `"Price"` instead of `price`) is
+> **not** accepted; passing one is dropped with an `onWarn` warning.
 
 ### Update
 

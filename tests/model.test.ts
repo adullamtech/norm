@@ -348,7 +348,7 @@ describe("norm.object (model factory)", () => {
           title: "New Lesson",
           order: 10,
           published: true,
-          youtube_url: "https://youtube.com/watch?v=abc",
+          youtubeUrl: "https://youtube.com/watch?v=abc",
         },
         markdown: "# Content",
       });
@@ -389,7 +389,7 @@ describe("norm.object (model factory)", () => {
         properties: {
           title: "Test",
           order: null,
-          youtube_url: null,
+          youtubeUrl: null,
         },
       });
 
@@ -406,6 +406,7 @@ describe("norm.object (model factory)", () => {
       const Model = norm.object({
         title: n.title(),
         week: n.relation({ property: "week" }),
+        related: n.multiRelation({ property: "related" }),
         tags: n.multiSelect({ property: "tags" }),
       });
 
@@ -413,7 +414,8 @@ describe("norm.object (model factory)", () => {
         parent: { data_source_id: "ds_123" },
         properties: {
           title: "Test",
-          week: ["week-1", "week-2"],
+          week: "week-1",
+          related: ["week-2", "week-3"],
           tags: ["a", "b"],
         },
       });
@@ -422,10 +424,156 @@ describe("norm.object (model factory)", () => {
         properties: Record<string, unknown>;
       };
       expect(call.properties.week).toEqual({
-        relation: [{ id: "week-1" }, { id: "week-2" }],
+        relation: [{ id: "week-1" }],
+      });
+      expect(call.properties.related).toEqual({
+        relation: [{ id: "week-2" }, { id: "week-3" }],
       });
       expect(call.properties.tags).toEqual({
         multi_select: [{ name: "a" }, { name: "b" }],
+      });
+    });
+
+    it("maps TypeScript field names to Notion property names", async () => {
+      mockClient.pages.create.mockResolvedValue({ id: "new-page-1" });
+
+      const Model = norm.object({
+        title: n.title(),
+        price: n.number({ property: "Price" }),
+        status: n.select({
+          property: "Status",
+          enum: ["active", "draft"],
+        }),
+        inStock: n.checkbox({ property: "In Stock" }),
+      });
+
+      await Model.create({
+        parent: { data_source_id: "ds_123" },
+        properties: {
+          title: "Keyboard",
+          price: 149.99,
+          status: "active",
+          inStock: true,
+        },
+      });
+
+      const call = mockClient.pages.create.mock.calls[0]![0] as {
+        properties: Record<string, unknown>;
+      };
+      expect(call.properties.Price).toEqual({ number: 149.99 });
+      expect(call.properties.Status).toEqual({
+        select: { name: "active" },
+      });
+      expect(call.properties["In Stock"]).toEqual({ checkbox: true });
+      expect(call.properties.price).toBeUndefined();
+      expect(call.properties.status).toBeUndefined();
+    });
+
+    it("rejects Notion property names and warns", async () => {
+      const onWarn = vi.fn();
+      const normWithWarn = new NormClient({
+        client: mockClient as unknown as NormConfig["client"],
+        onWarn,
+      });
+      mockClient.pages.create.mockResolvedValue({ id: "new-page-1" });
+
+      const Model = normWithWarn.object({
+        youtubeUrl: n.url({ property: "youtube_url" }),
+      });
+
+      await Model.create({
+        parent: { data_source_id: "ds_123" },
+        properties: {
+          // @ts-expect-error — Notion property names are not accepted
+          youtube_url: "https://youtube.com/watch?v=abc",
+        },
+      });
+
+      expect(onWarn).toHaveBeenCalledWith(
+        'Unknown property "youtube_url". Did you mean the TypeScript field "youtubeUrl"?',
+        { property: "youtube_url" },
+      );
+
+      const call = mockClient.pages.create.mock.calls[0]![0] as {
+        properties: Record<string, unknown>;
+      };
+      expect(call.properties).toEqual({});
+    });
+
+    it("warns instead of writing read-only fields", async () => {
+      const onWarn = vi.fn();
+      const normWithWarn = new NormClient({
+        client: mockClient as unknown as NormConfig["client"],
+        onWarn,
+      });
+      mockClient.pages.create.mockResolvedValue({ id: "new-page-1" });
+
+      const Model = normWithWarn.object({
+        title: n.title(),
+        computed: n.rollupText({ property: "Computed" }),
+      });
+
+      await Model.create({
+        parent: { data_source_id: "ds_123" },
+        properties: {
+          title: "Test",
+          // @ts-expect-error — rollups are read-only
+          computed: "nope",
+        },
+      });
+
+      expect(onWarn).toHaveBeenCalledWith(
+        'Property "computed" is read-only and cannot be written.',
+        { property: "computed" },
+      );
+
+      const call = mockClient.pages.create.mock.calls[0]![0] as {
+        properties: Record<string, unknown>;
+      };
+      expect(call.properties).toEqual({
+        title: { title: [{ text: { content: "Test" } }] },
+      });
+    });
+
+    it("keeps optional fields optional", async () => {
+      mockClient.pages.create.mockResolvedValue({ id: "new-page-1" });
+
+      const Model = norm.object({
+        title: n.title(),
+        sku: n.richText({ property: "SKU" }).optional(),
+      });
+
+      await Model.create({
+        parent: { data_source_id: "ds_123" },
+        properties: { title: "No SKU" },
+      });
+
+      const call = mockClient.pages.create.mock.calls[0]![0] as {
+        properties: Record<string, unknown>;
+      };
+      expect(call.properties).toEqual({
+        title: { title: [{ text: { content: "No SKU" } }] },
+      });
+    });
+
+    it("keeps defaulted fields optional", async () => {
+      mockClient.pages.create.mockResolvedValue({ id: "new-page-1" });
+
+      const Model = norm.object({
+        title: n.title({ property: "Name" }),
+        currency: n.richText({ property: "Currency" }).default("USD"),
+      });
+
+      await Model.create({
+        parent: { data_source_id: "ds_123" },
+        properties: { title: "No currency" },
+      });
+
+      const call = mockClient.pages.create.mock.calls[0]![0] as {
+        properties: Record<string, unknown>;
+      };
+      expect(call.properties).toEqual({
+        Name: { title: [{ text: { content: "No currency" } }] },
       });
     });
   });
@@ -450,7 +598,7 @@ describe("norm.object (model factory)", () => {
           title: "Updated Lesson",
           order: 20,
           published: false,
-          youtube_url: "https://youtube.com/watch?v=updated",
+          youtubeUrl: "https://youtube.com/watch?v=updated",
         },
       });
 
@@ -491,7 +639,7 @@ describe("norm.object (model factory)", () => {
         pageId: "page-1",
         properties: {
           order: null,
-          youtube_url: null,
+          youtubeUrl: null,
         },
       });
 
@@ -511,13 +659,15 @@ describe("norm.object (model factory)", () => {
       const Model = norm.object({
         title: n.title(),
         week: n.relation({ property: "week" }),
+        related: n.multiRelation({ property: "related" }),
         tags: n.multiSelect({ property: "tags" }),
       });
 
       await Model.update({
         pageId: "page-1",
         properties: {
-          week: ["week-1", "week-2"],
+          week: "week-1",
+          related: ["week-2", "week-3"],
           tags: ["a", "b"],
         },
       });
@@ -526,7 +676,10 @@ describe("norm.object (model factory)", () => {
         properties: Record<string, unknown>;
       };
       expect(call.properties.week).toEqual({
-        relation: [{ id: "week-1" }, { id: "week-2" }],
+        relation: [{ id: "week-1" }],
+      });
+      expect(call.properties.related).toEqual({
+        relation: [{ id: "week-2" }, { id: "week-3" }],
       });
       expect(call.properties.tags).toEqual({
         multi_select: [{ name: "a" }, { name: "b" }],
@@ -558,6 +711,44 @@ describe("norm.object (model factory)", () => {
       expect(call.properties.order).toEqual({ number: 99 });
       expect(call.properties.title).toBeUndefined();
       expect(call.properties.published).toBeUndefined();
+    });
+
+    it("updates only markdown when properties are empty", async () => {
+      mockClient.pages.updateMarkdown.mockResolvedValue({ markdown: "# New" });
+
+      const Model = norm.object({
+        title: n.title(),
+      });
+
+      const result = await Model.update({
+        pageId: "page-1",
+        properties: {},
+        markdown: "# New content",
+      });
+
+      expect(result).toBe(true);
+      expect(mockClient.pages.update).not.toHaveBeenCalled();
+      expect(mockClient.pages.updateMarkdown).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page_id: "page-1",
+          replace_content: { new_str: "# New content" },
+        }),
+      );
+    });
+
+    it("returns false when there is nothing to update", async () => {
+      const Model = norm.object({
+        title: n.title(),
+      });
+
+      const result = await Model.update({
+        pageId: "page-1",
+        properties: {},
+      });
+
+      expect(result).toBe(false);
+      expect(mockClient.pages.update).not.toHaveBeenCalled();
+      expect(mockClient.pages.updateMarkdown).not.toHaveBeenCalled();
     });
 
     it("updates markdown via updatePageMarkdown when provided", async () => {
