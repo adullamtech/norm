@@ -2,7 +2,10 @@ import type { z, ZodType, ZodRawShape } from "zod";
 import { ZodObject } from "zod";
 import type { NormClient } from "./client";
 import type { RetrieveOptions, QueryOpts } from "./types";
+import { CREATABLE_EXTRACTORS } from "./types";
+import type { CreatableExtractor } from "./types";
 import { getNotionMeta } from "./retriever";
+import type { ExtractorType } from "./registry";
 import { id as makeIdBuilder } from "./builders";
 
 export interface NormModel<T, CreateProps> {
@@ -63,7 +66,12 @@ function translateProperty(extractor: string, value: unknown): unknown {
       return { multi_select: names.map((name) => ({ name: String(name) })) };
     }
     case "relationIds": {
-      const ids = Array.isArray(value) ? value : [];
+      const ids =
+        value === null || value === undefined
+          ? []
+          : Array.isArray(value)
+            ? value
+            : [value];
       return { relation: ids.map((id) => ({ id: String(id) })) };
     }
     default:
@@ -117,7 +125,11 @@ export function defineObject<TShape extends ZodRawShape>(
       );
     },
     async create(input) {
-      const translated = translateProperties(finalShape, input.properties);
+      const translated = translateProperties(
+        finalShape,
+        input.properties as Record<string, unknown>,
+        client,
+      );
       return client.createPage({
         parent: input.parent,
         properties: translated,
@@ -125,16 +137,22 @@ export function defineObject<TShape extends ZodRawShape>(
       });
     },
     async update(input) {
-      const translated = translateProperties(finalShape, input.properties);
-      const ok = await client.updatePage({
+      const translated = translateProperties(
+        finalShape,
+        input.properties as Record<string, unknown>,
+        client,
+      );
+
+      // Nothing to write — avoid a pointless (and possibly failing) API call.
+      if (Object.keys(translated).length === 0 && input.markdown === undefined) {
+        return false;
+      }
+
+      return client.updatePage({
         pageId: input.pageId,
         properties: translated,
+        markdown: input.markdown,
       });
-      if (!ok) return false;
-      if (input.markdown !== undefined) {
-        return client.updatePageMarkdown(input.pageId, input.markdown);
-      }
-      return true;
     },
     async query(databaseId, queryOpts) {
       const { results } = await client.queryDatabase(databaseId, {
@@ -210,33 +228,82 @@ function collectPropertyNames(shape: ZodRawShape): string[] {
   return names;
 }
 
-function findExtractorByProperty(
-  shape: ZodRawShape,
-  propertyName: string,
-): { extractor?: string } {
-  for (const [, fieldSchema] of Object.entries(shape)) {
-    const meta = getNotionMeta(fieldSchema as ZodType);
-    if (!meta) continue;
-    const extractor = meta.extractor;
-    const property = meta.notionProperty;
-    if (property === propertyName && extractor) {
-      return { extractor };
-    }
-  }
-  return {};
+interface FieldMeta {
+  extractor: ExtractorType;
+  notionProperty: string;
 }
 
-/** Translate simplified property inputs into Notion's verbose property format. */
+/** Map each TypeScript field name to its extractor and Notion property name. */
+function buildFieldMap(shape: ZodRawShape): Map<string, FieldMeta> {
+  const fields = new Map<string, FieldMeta>();
+  for (const [key, fieldSchema] of Object.entries(shape)) {
+    const meta = getNotionMeta(fieldSchema as ZodType);
+    if (!meta?.extractor) continue;
+    fields.set(key, {
+      extractor: meta.extractor,
+      notionProperty: meta.notionProperty ?? key,
+    });
+  }
+  return fields;
+}
+
+function isWritableExtractor(
+  extractor: ExtractorType,
+): extractor is CreatableExtractor {
+  return CREATABLE_EXTRACTORS.has(extractor as CreatableExtractor);
+}
+
+/**
+ * Translate simplified property inputs (keyed by TypeScript field name) into
+ * Notion's verbose property format (keyed by Notion property name).
+ *
+ * Only TypeScript field names are accepted. Unknown keys and read-only fields
+ * are reported through `client.warn()` instead of being written silently.
+ */
 function translateProperties(
   shape: ZodRawShape,
   props: Record<string, unknown>,
+  client: NormClient,
 ): Record<string, unknown> {
+  const fields = buildFieldMap(shape);
+
+  // Notion property name → TypeScript field name, for helpful warnings.
+  const byNotionName = new Map<string, string>();
+  for (const [key, field] of fields) {
+    if (!byNotionName.has(field.notionProperty)) {
+      byNotionName.set(field.notionProperty, key);
+    }
+  }
+
   const translated: Record<string, unknown> = {};
-  for (const [propKey, value] of Object.entries(props)) {
-    const { extractor } = findExtractorByProperty(shape, propKey);
-    if (!extractor) continue;
-    const translatedValue = translateProperty(extractor, value);
-    translated[propKey] = translatedValue;
+  for (const [fieldKey, value] of Object.entries(props)) {
+    const field = fields.get(fieldKey);
+
+    if (!field) {
+      const suggestion = byNotionName.get(fieldKey);
+      client.warn(
+        suggestion
+          ? `Unknown property "${fieldKey}". Did you mean the TypeScript field "${suggestion}"?`
+          : `Unknown property "${fieldKey}" — it is not declared in the model schema.`,
+        { property: fieldKey },
+      );
+      continue;
+    }
+
+    if (!isWritableExtractor(field.extractor)) {
+      client.warn(
+        `Property "${fieldKey}" is read-only and cannot be written.`,
+        { property: fieldKey },
+      );
+      continue;
+    }
+
+    if (value === undefined) continue;
+
+    translated[field.notionProperty] = translateProperty(
+      field.extractor,
+      value,
+    );
   }
   return translated;
 }
