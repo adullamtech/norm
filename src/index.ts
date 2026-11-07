@@ -10,6 +10,8 @@ export type {
   QueryDatabaseResult,
   SimplifiedInput,
   CreatableExtractor,
+  WritableKeys,
+  WritableProps,
 } from "./types";
 export type { NormModel } from "./model";
 export { n } from "./builders";

@@ -2,7 +2,7 @@ import type {
   PageObjectResponse,
   QueryDataSourceParameters,
 } from "@notionhq/client/build/src/api-endpoints";
-import type { ExtractorType } from "./registry";
+import type { z, ZodRawShape, ZodType } from "zod";
 
 export type { PageObjectResponse } from "@notionhq/client/build/src/api-endpoints";
 export type { ExtractorType, NotionFieldMeta } from "./registry";
@@ -67,8 +67,11 @@ export interface NormAttachment {
 /**
  * Simplified input value per extractor type for `Model.create`.
  * Users supply these; the library translates to Notion's verbose format.
+ *
+ * `singleRelation` is a type-level-only extractor name used by the
+ * `n.singleRelation()` brand so writes accept a single id string.
  */
-export type SimplifiedInput<E extends ExtractorType> = E extends
+export type SimplifiedInput<E extends string> = E extends
   | "title"
   | "richText"
   | "email"
@@ -83,7 +86,9 @@ export type SimplifiedInput<E extends ExtractorType> = E extends
           ? string
           : E extends "multiSelect" | "relationIds"
             ? string[]
-            : never;
+            : E extends "singleRelation"
+              ? string
+              : never;
 
 /** Extractors that can be used when creating a page. */
 export type CreatableExtractor =
@@ -110,3 +115,56 @@ export const CREATABLE_EXTRACTORS: ReadonlySet<CreatableExtractor> = new Set([
   "multiSelect",
   "relationIds",
 ]);
+
+/**
+ * Extractors that accept a value on write. Mirrors `CREATABLE_EXTRACTORS`
+ * plus the type-level-only `singleRelation` brand.
+ */
+type WritableExtractor = CreatableExtractor | "singleRelation";
+
+/** Pull the extractor name out of a builder's `E::P` brand. */
+type BrandExtractor<T> = [T] extends [never]
+  ? never
+  : T extends z.$brand<infer B>
+    ? B extends `${infer E}::${string}`
+      ? E
+      : never
+    : never;
+
+/** Extractor declared by a schema field, or `never` for plain Zod fields. */
+type ExtractorOf<S> = S extends ZodType ? BrandExtractor<z.input<S>> : never;
+
+type IsWritableExtractor<E> = [E] extends [never]
+  ? false
+  : E extends WritableExtractor
+    ? true
+    : false;
+
+/** TypeScript field names that can be passed to `create`/`update`. */
+export type WritableKeys<TShape extends ZodRawShape> = {
+  [K in keyof TShape]: IsWritableExtractor<ExtractorOf<TShape[K]>> extends true
+    ? K
+    : never;
+}[keyof TShape];
+
+type OptionalWritableKeys<TShape extends ZodRawShape> = {
+  [K in WritableKeys<TShape>]: undefined extends z.input<TShape[K]>
+    ? K
+    : never;
+}[WritableKeys<TShape>];
+
+/**
+ * The writable property shape for a model, keyed by TypeScript field names.
+ * Read-only fields (`id`, markdown, rollups, page icon) are excluded, and
+ * fields declared `.optional()`/`.default()` stay optional.
+ */
+export type WritableProps<TShape extends ZodRawShape> = {
+  [K in Exclude<
+    WritableKeys<TShape>,
+    OptionalWritableKeys<TShape>
+  >]: SimplifiedInput<ExtractorOf<TShape[K]>>;
+} & {
+  [K in OptionalWritableKeys<TShape>]?: SimplifiedInput<
+    ExtractorOf<TShape[K]>
+  >;
+};
